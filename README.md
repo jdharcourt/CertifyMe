@@ -11,6 +11,10 @@ Two tools, one DigiKey-backed engine:
 - **BOM Generator** — reads the schematic, groups and counts parts, prices each
   one via DigiKey, and writes a **priced Excel (.xlsx) + CSV** Bill of Materials
   with part links. See [Generate a priced BOM](#generate-a-priced-bom).
+- **Missing-info Highlighter** — outlines footprints on the PCB whose **datasheet**
+  couldn't be found (translucent **white**) or whose **price** couldn't be found
+  (translucent **cyan**), right in the PCB editor. See
+  [Highlight missing info on the PCB](#highlight-missing-info-on-the-pcb).
 
 ## What it does
 
@@ -173,6 +177,31 @@ Buy Link · DNP`.
 The `.xlsx` is written with a small built-in OOXML writer (no `openpyxl` or other
 dependency needed), so it works inside KiCad's bundled Python too.
 
+## Highlight missing info on the PCB
+
+Open the plugin dialog in the **PCB Editor** and click **Highlight Missing**. It
+scans every footprint on the open board, looks each one up via DigiKey, and
+draws a translucent outline around the parts that are missing information:
+
+- **White (30% translucent)** — datasheet could not be found.
+- **Cyan (30% translucent)** — price could not be found.
+- A part missing both gets both outlines.
+
+The flagged parts are also listed in the dialog (Ref · Value · Missing);
+**double-click a row to zoom** straight to that part on the board. **Clear
+Highlights** removes the outlines again.
+
+How it's drawn:
+
+- Outlines are rectangles on the **Eco1.User** (datasheet) and **Eco2.User**
+  (price) layers, grouped so they can be removed cleanly.
+- The translucent white/cyan colours come from setting those two layers to
+  `rgba(255,255,255,0.30)` / `rgba(0,255,255,0.30)` in your active KiCad colour
+  theme. This works automatically when your board uses an editable (non-built-in)
+  colour theme; otherwise the dialog tells you to set those two layer colours
+  once in the **Appearance** panel. If the canvas colours don't update
+  immediately, reopen the board or re-select the theme in Preferences.
+
 ## Project layout
 
 ```
@@ -182,11 +211,14 @@ src/certifyme/           # reusable engine (stdlib only, no runtime deps)
   linker.py              #   datasheet-linking orchestration + reporting
   bom.py                 #   BOM: collect, group, price, write xlsx/csv
   xlsx.py                #   dependency-free .xlsx writer
+  highlight.py           #   missing-info classification + outline styles
+  kicad_theme.py         #   reversible board colour-theme editing
   config.py              #   API-key storage / resolution (global + project)
   cli.py                 #   `certifyme` command (setup / status / link / bom)
   providers/             #   DigiKey API client (price + datasheet) + dummy
 kicad_plugin/            # KiCad Action Plugin wrapper (pcbnew + wx)
-  action_certifyme.py    #   toolbar button, dialog, live-board update, BOM
+  action_certifyme.py    #   toolbar button, dialog, live-board update, BOM,
+                         #   PCB missing-info highlighter
   metadata.json          #   KiCad Plugin & Content Manager manifest
 install_plugin.ps1       # copies plugin + engine into KiCad's plugins dir
 tests/                   # pytest suite (runs fully offline)
