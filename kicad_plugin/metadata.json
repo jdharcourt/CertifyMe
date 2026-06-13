@@ -1,0 +1,22 @@
+{
+  "$schema": "https://go.kicad.org/pcm/schemas/v1",
+  "name": "CertifyMe Datasheet Linker",
+  "description": "Find each part's datasheet online and link it into the matching symbol, footprint and schematic part.",
+  "description_full": "CertifyMe scans the open KiCad project for parts (symbols, footprint libraries, schematic components and the live board), looks up each part's datasheet via the DigiKey Product Information API, and writes the URL into the part's Datasheet property.",
+  "identifier": "com.certifyme.datasheet_linker",
+  "type": "plugin",
+  "author": {
+    "name": "CertifyMe"
+  },
+  "license": "MIT",
+  "resources": {
+    "homepage": "https://github.com/your-org/CertifyMe"
+  },
+  "versions": [
+    {
+      "version": "0.1.0",
+      "status": "testing",
+      "kicad_version": "7.0"
+    }
+  ]
+}

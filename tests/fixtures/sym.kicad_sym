@@ -1,0 +1,23 @@
+(kicad_symbol_lib
+  (version 20231120)
+  (generator "kicad_symbol_editor")
+  (symbol "MCU:STM32F103C8T6"
+    (property "Reference" "U" (at 0 0 0)
+      (effects (font (size 1.27 1.27))))
+    (property "Value" "STM32F103C8T6" (at 0 -2.54 0)
+      (effects (font (size 1.27 1.27))))
+    (property "Datasheet" "~" (at 0 -5.08 0)
+      (effects (font (size 1.27 1.27)) (hide yes)))
+    (property "MPN" "STM32F103C8T6" (at 0 -7.62 0)
+      (effects (font (size 1.27 1.27)) (hide yes)))
+    (symbol "STM32F103C8T6_1_1"
+      (rectangle (start -5.08 5.08) (end 5.08 -5.08))))
+  (symbol "Device:R"
+    (property "Reference" "R" (at 0 0 0)
+      (effects (font (size 1.27 1.27))))
+    (property "Value" "10k" (at 0 -2.54 0)
+      (effects (font (size 1.27 1.27))))
+    (property "Datasheet" "https://example.com/existing.pdf" (at 0 -5.08 0)
+      (effects (font (size 1.27 1.27)) (hide yes)))
+    (symbol "R_1_1"
+      (rectangle (start -1.016 2.54) (end 1.016 -2.54)))))
