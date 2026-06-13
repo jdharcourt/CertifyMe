@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import ssl
 import time
 import urllib.error
 import urllib.parse
@@ -33,6 +34,43 @@ SANDBOX_HOST = "https://sandbox-api.digikey.com"
 
 class DigiKeyError(RuntimeError):
     pass
+
+
+def _build_ssl_context() -> ssl.SSLContext:
+    """Build an SSL context with a CA bundle that actually exists.
+
+    KiCad bundles a Python whose default cert path points at a non-existent
+    python.org location, so ``urlopen`` fails every HTTPS call with a misleading
+    "self signed certificate in certificate chain" error. We pick the first CA
+    bundle we can find so verification works inside KiCad's interpreter too.
+
+    Order: explicit env override -> certifi -> the system bundle -> Python's
+    own defaults. Set ``DIGIKEY_INSECURE=1`` to skip verification entirely
+    (last resort; not recommended).
+    """
+    if os.environ.get("DIGIKEY_INSECURE", "").lower() in ("1", "true", "yes"):
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        return ctx
+
+    for var in ("DIGIKEY_CA_BUNDLE", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE"):
+        path = os.environ.get(var)
+        if path and os.path.exists(path):
+            return ssl.create_default_context(cafile=path)
+
+    try:
+        import certifi
+
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        pass
+
+    for path in ("/etc/ssl/cert.pem", "/opt/homebrew/etc/ca-certificates/cert.pem"):
+        if os.path.exists(path):
+            return ssl.create_default_context(cafile=path)
+
+    return ssl.create_default_context()
 
 
 class DigiKeyProvider(CachingProvider):
@@ -62,6 +100,7 @@ class DigiKeyProvider(CachingProvider):
         self.locale_language = locale_language
         self.locale_currency = locale_currency
         self.timeout = timeout
+        self._ssl = _build_ssl_context()
         self._token: str | None = None
         self._token_expiry: float = 0.0
 
@@ -135,7 +174,7 @@ class DigiKeyProvider(CachingProvider):
 
     def _send(self, req: urllib.request.Request, _retries: int = 2) -> dict:
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            with urllib.request.urlopen(req, timeout=self.timeout, context=self._ssl) as resp:
                 return json.loads(resp.read().decode("utf-8") or "{}")
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "replace")
