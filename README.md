@@ -2,11 +2,15 @@
 
 A KiCad plugin (plus CLI) for PCB certification automation.
 
-The first tool in the kit is the **Datasheet Linker**: it scrubs through a KiCad
-project, finds each component, looks up its datasheet online via the
-[DigiKey API](https://developer.digikey.com/), and links the URL into the
-matching part's `Datasheet` field — across symbols, footprint libraries, the
-schematic, and the live board.
+Two tools, one DigiKey-backed engine:
+
+- **Datasheet Linker** — scrubs a KiCad project, finds each component, looks up
+  its datasheet online via the [DigiKey API](https://developer.digikey.com/),
+  and links the URL into the matching part's `Datasheet` field (symbols,
+  footprint libraries, schematic, and the live board).
+- **BOM Generator** — reads the schematic, groups and counts parts, prices each
+  one via DigiKey, and writes a **priced Excel (.xlsx) + CSV** Bill of Materials
+  with part links. See [Generate a priced BOM](#generate-a-priced-bom).
 
 ## What it does
 
@@ -133,18 +137,56 @@ Offline testing without DigiKey, using a static `{query: url}` map:
 certifyme project --provider dummy --dummy-map map.json
 ```
 
+## Generate a priced BOM
+
+The **BOM Generator** turns the project's schematic into a costed parts list.
+
+**In the plugin:** open the dialog (Tools → External Plugins → CertifyMe), make
+sure your DigiKey keys are entered, and click **Generate BOM…**. Pick where to
+save the `.xlsx`; a matching `.csv` is written alongside it.
+
+**From the CLI:**
+
+```bash
+certifyme bom path/to/project                 # writes <project>-BOM.xlsx
+certifyme bom path/to/project -o costed.xlsx --csv -v
+certifyme bom board.kicad_sch --currency EUR
+```
+
+How it works:
+
+1. Reads components from the schematic (`*.kicad_sch`). Multi-unit parts that
+   share a reference are counted once; power/no-connect symbols (`#PWR…`) are
+   skipped. If there's no schematic, it falls back to the board (`*.kicad_pcb`).
+2. Groups identical parts (by **Value + Footprint + MPN**), counts the quantity,
+   and lists their references (`R1, R2, …`).
+3. Prices each line through DigiKey — pulling **unit price, manufacturer,
+   description, stock, supplier P/N, datasheet link and a buy link**.
+4. Writes an Excel workbook with a bold frozen-style header, currency
+   formatting, clickable links, and a **TOTAL** row (quantity + extended cost).
+   Parts marked **DNP** are listed but excluded from the totals.
+
+Columns: `# · References · Qty · Value · Footprint · MPN · Manufacturer ·
+Description · Unit Price · Ext. Price · Stock · Supplier P/N · Datasheet ·
+Buy Link · DNP`.
+
+The `.xlsx` is written with a small built-in OOXML writer (no `openpyxl` or other
+dependency needed), so it works inside KiCad's bundled Python too.
+
 ## Project layout
 
 ```
 src/certifyme/           # reusable engine (stdlib only, no runtime deps)
   sexpr.py               #   span-preserving S-expression parser + editor
   kicad.py               #   part discovery + in-place Datasheet writing
-  linker.py              #   orchestration + reporting
+  linker.py              #   datasheet-linking orchestration + reporting
+  bom.py                 #   BOM: collect, group, price, write xlsx/csv
+  xlsx.py                #   dependency-free .xlsx writer
   config.py              #   API-key storage / resolution (global + project)
-  cli.py                 #   `certifyme` command (setup / status / link)
-  providers/             #   DigiKey API client + dummy/offline provider
+  cli.py                 #   `certifyme` command (setup / status / link / bom)
+  providers/             #   DigiKey API client (price + datasheet) + dummy
 kicad_plugin/            # KiCad Action Plugin wrapper (pcbnew + wx)
-  action_certifyme.py    #   toolbar button, dialog, live-board update
+  action_certifyme.py    #   toolbar button, dialog, live-board update, BOM
   metadata.json          #   KiCad Plugin & Content Manager manifest
 install_plugin.ps1       # copies plugin + engine into KiCad's plugins dir
 tests/                   # pytest suite (runs fully offline)

@@ -12,6 +12,10 @@ It works on two surfaces:
    (.kicad_mod) and the schematic (.kicad_sch) are scanned and rewritten on
    disk by the bundled CertifyMe engine.
 
+It can also **generate a priced Bill of Materials** (Excel + CSV) from the
+project's schematic, with part counts, unit/extended prices, stock, and links
+to each part and its datasheet.
+
 The engine is imported as a bundled subpackage when installed, or from the
 repo's ``src/`` directory when run from a checkout.
 """
@@ -27,6 +31,7 @@ import wx
 
 # --- locate the CertifyMe engine ------------------------------------------
 try:  # installed layout: certifyme/ sits next to this file
+    from .certifyme import bom as bom_mod
     from .certifyme import config
     from .certifyme.linker import PartResult, link_project, summarize
     from .certifyme.providers import build_provider
@@ -34,6 +39,7 @@ except ImportError:  # dev checkout: engine lives in ../src
     _src = os.path.join(os.path.dirname(__file__), "..", "src")
     if _src not in sys.path:
         sys.path.insert(0, _src)
+    from certifyme import bom as bom_mod  # type: ignore
     from certifyme import config  # type: ignore
     from certifyme.linker import PartResult, link_project, summarize  # type: ignore
     from certifyme.providers import build_provider  # type: ignore
@@ -217,15 +223,18 @@ class CertifyMeDialog(wx.Dialog):
 
         # Buttons
         btns = wx.BoxSizer(wx.HORIZONTAL)
-        self.run_btn = wx.Button(panel, label="Run")
+        self.run_btn = wx.Button(panel, label="Link Datasheets")
+        self.bom_btn = wx.Button(panel, label="Generate BOM...")
         close_btn = wx.Button(panel, id=wx.ID_CANCEL, label="Close")
         btns.AddStretchSpacer()
         btns.Add(self.run_btn, 0, wx.RIGHT, 6)
+        btns.Add(self.bom_btn, 0, wx.RIGHT, 6)
         btns.Add(close_btn, 0)
         outer.Add(btns, 0, wx.EXPAND | wx.ALL, 8)
 
         panel.SetSizer(outer)
         self.run_btn.Bind(wx.EVT_BUTTON, self.on_run)
+        self.bom_btn.Bind(wx.EVT_BUTTON, self.on_bom)
         self.save_btn.Bind(wx.EVT_BUTTON, self.on_save_creds)
         self.test_btn.Bind(wx.EVT_BUTTON, self.on_test_creds)
 
@@ -290,6 +299,62 @@ class CertifyMeDialog(wx.Dialog):
             self.log("ERROR:\n" + traceback.format_exc())
         finally:
             self.run_btn.Enable()
+
+    def on_bom(self, _evt) -> None:
+        self.log_ctrl.SetValue("")
+        self.bom_btn.Disable()
+        try:
+            self._do_bom()
+        except Exception:
+            self.log("ERROR:\n" + traceback.format_exc())
+        finally:
+            self.bom_btn.Enable()
+
+    def _do_bom(self) -> None:
+        provider_name = self.provider_choice.GetStringSelection()
+        self._apply_creds_to_env()
+        try:
+            provider = build_provider(provider_name)
+        except Exception as exc:
+            self.log(f"Cannot start provider '{provider_name}': {exc}")
+            self.log("Enter your DigiKey keys above (Save / Test), then retry.")
+            return
+
+        if not self.project or not os.path.isdir(self.project):
+            self.log("Save the project first so its schematic can be found.")
+            return
+
+        default_name = f"{os.path.basename(self.project)}-BOM.xlsx"
+        dlg = wx.FileDialog(
+            self, "Save BOM", defaultDir=self.project, defaultFile=default_name,
+            wildcard="Excel workbook (*.xlsx)|*.xlsx",
+            style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT,
+        )
+        try:
+            if dlg.ShowModal() != wx.ID_OK:
+                self.log("BOM cancelled.")
+                return
+            out_path = dlg.GetPath()
+        finally:
+            dlg.Destroy()
+
+        self.log("Building BOM (pricing parts)...\n")
+        bom = bom_mod.build_bom(
+            __import__("pathlib").Path(self.project),
+            provider,
+            on_event=lambda l: self.log(
+                f"  {l.quantity:>3}x  {l.value:16} "
+                f"{(l.unit_price and f'{l.unit_price:.4f}') or '-':>9}  [{l.refs_text}]"
+            ),
+        )
+        if not bom.lines:
+            self.log("No components found in the project's schematic.")
+            return
+        bom_mod.write_xlsx_bom(bom, out_path)
+        csv_path = os.path.splitext(out_path)[0] + ".csv"
+        bom_mod.write_csv_bom(bom, csv_path)
+        self.log("\n" + bom_mod.summarize(bom))
+        self.log(f"\nWrote:\n  {out_path}\n  {csv_path}")
 
     def _do_run(self) -> None:
         provider_name = self.provider_choice.GetStringSelection()

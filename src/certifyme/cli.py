@@ -17,6 +17,7 @@ import json
 import sys
 from pathlib import Path
 
+from . import bom as bom_mod
 from . import config
 from .linker import PartResult, link_project, summarize
 from .providers import build_provider
@@ -28,7 +29,7 @@ _STATUS_GLYPH = {
     "no-key": "-",
 }
 
-_SUBCOMMANDS = {"setup", "status", "link"}
+_SUBCOMMANDS = {"setup", "status", "link", "bom"}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -62,6 +63,11 @@ def build_parser() -> argparse.ArgumentParser:
     _add_link_args(lk)
     lk.set_defaults(func=cmd_link)
 
+    # bom
+    bm = sub.add_parser("bom", help="Generate a priced Excel BOM.")
+    _add_bom_args(bm)
+    bm.set_defaults(func=cmd_bom)
+
     return p
 
 
@@ -77,6 +83,16 @@ def _add_link_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--overwrite", action="store_true", help="Replace existing Datasheet values.")
     p.add_argument("--field", dest="prefer_field", help="Property to use as the search key (e.g. MPN).")
     p.add_argument("-v", "--verbose", action="store_true", help="Print one line per part.")
+
+
+def _add_bom_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("project", type=Path, help="KiCad project directory or a .kicad_sch/.kicad_pcb file.")
+    p.add_argument("-o", "--output", type=Path, help="Output .xlsx path (default: <project>-BOM.xlsx).")
+    p.add_argument("--csv", action="store_true", help="Also write a .csv alongside the .xlsx.")
+    p.add_argument("--provider", default="digikey", help="'digikey' (default) or 'dummy'.")
+    p.add_argument("--dummy-map", type=Path, help="With --provider dummy: JSON {query: url|fields}.")
+    p.add_argument("--currency", default="USD", help="Currency label for the BOM (default: USD).")
+    p.add_argument("-v", "--verbose", action="store_true", help="Print one line per BOM entry.")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -221,6 +237,59 @@ def cmd_link(args) -> int:
     if args.dry_run:
         print("\n[dry run -- no files written]")
     print("\n" + summarize(report))
+    return 0
+
+
+# -- bom --------------------------------------------------------------------
+
+def cmd_bom(args) -> int:
+    if not args.project.exists():
+        print(f"error: path not found: {args.project}", file=sys.stderr)
+        return 2
+
+    project_dir = args.project if args.project.is_dir() else args.project.parent
+    config.load_into_env(project_dir)
+
+    provider_kwargs = {}
+    if args.provider == "dummy":
+        mapping = {}
+        if args.dummy_map and args.dummy_map.exists():
+            mapping = json.loads(args.dummy_map.read_text(encoding="utf-8"))
+        provider_kwargs["mapping"] = mapping
+
+    try:
+        provider = build_provider(args.provider, **provider_kwargs)
+    except Exception as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        if args.provider == "digikey":
+            print("\nNo API keys found. Run:  certifyme setup", file=sys.stderr)
+        return 2
+
+    def on_event(line) -> None:
+        if not args.verbose:
+            return
+        price = f"{line.unit_price:.4f}" if line.unit_price is not None else "    -   "
+        print(f"  {line.quantity:>3}x  {line.value:16} {line.mpn:18} {price}  [{line.refs_text}]")
+
+    bom = bom_mod.build_bom(args.project, provider, currency=args.currency, on_event=on_event)
+
+    if not bom.lines:
+        print("No components found. Point at a project with a .kicad_sch (or a "
+              ".kicad_pcb) containing placed parts.", file=sys.stderr)
+        return 1
+
+    out = args.output or (project_dir / f"{bom.project_name}-BOM.xlsx")
+    bom_mod.write_xlsx_bom(bom, out)
+    written = [out]
+    if args.csv:
+        csv_path = out.with_suffix(".csv")
+        bom_mod.write_csv_bom(bom, csv_path)
+        written.append(csv_path)
+
+    print("\n" + bom_mod.summarize(bom))
+    print("\nWrote:")
+    for w in written:
+        print(f"  {w}")
     return 0
 
 

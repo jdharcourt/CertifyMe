@@ -26,7 +26,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from .base import CachingProvider
+from .base import CachingProvider, ProductInfo
 
 PROD_HOST = "https://api.digikey.com"
 SANDBOX_HOST = "https://sandbox-api.digikey.com"
@@ -147,7 +147,7 @@ class DigiKeyProvider(CachingProvider):
 
     # -- search -------------------------------------------------------------
 
-    def _lookup(self, query: str) -> str | None:
+    def _lookup_product(self, query: str) -> ProductInfo | None:
         token = self._access_token()
         body = json.dumps({"Keywords": query, "Limit": 5, "Offset": 0}).encode()
         req = urllib.request.Request(
@@ -164,11 +164,8 @@ class DigiKeyProvider(CachingProvider):
             },
             method="POST",
         )
-        try:
-            payload = self._send(req)
-        except DigiKeyError:
-            raise
-        return _extract_datasheet(payload)
+        payload = self._send(req)
+        return _extract_product(payload, query, self.locale_currency)
 
     # -- transport ----------------------------------------------------------
 
@@ -189,23 +186,85 @@ class DigiKeyProvider(CachingProvider):
             raise DigiKeyError(f"network error contacting DigiKey: {exc}") from exc
 
 
-def _extract_datasheet(payload: dict) -> str | None:
-    """Pull a datasheet URL out of a v4 keyword-search response, tolerating
-    the slightly different shapes the API returns."""
-    buckets = []
+def _first_product(payload: dict) -> dict | None:
+    """The best matching product dict from a v4 keyword-search response,
+    tolerating the slightly different shapes the API returns."""
     for key in ("ExactMatches", "Products"):
         value = payload.get(key)
         if isinstance(value, list):
-            buckets.extend(value)
-    # Some responses nest under ProductsV4 or similar.
-    for product in buckets:
-        if not isinstance(product, dict):
-            continue
-        for field in ("DatasheetUrl", "PrimaryDatasheet", "datasheetUrl"):
-            url = product.get(field)
-            if url:
-                return _normalize(url)
+            for product in value:
+                if isinstance(product, dict):
+                    return product
     return None
+
+
+def _extract_product(payload: dict, query: str, currency: str) -> ProductInfo | None:
+    product = _first_product(payload)
+    if product is None:
+        return None
+
+    def first(*fields):
+        for f in fields:
+            val = product.get(f)
+            if val not in (None, "", 0):
+                return val
+        return None
+
+    manufacturer = product.get("Manufacturer")
+    if isinstance(manufacturer, dict):
+        manufacturer = manufacturer.get("Name") or manufacturer.get("Value")
+
+    description = product.get("Description")
+    if isinstance(description, dict):
+        description = description.get("ProductDescription") or description.get("DetailedDescription")
+    if not description:
+        description = first("ProductDescription", "DetailedDescription")
+
+    datasheet = first("DatasheetUrl", "PrimaryDatasheet", "datasheetUrl")
+    product_url = first("ProductUrl", "ProductUrlV4")
+    unit_price = _price(product)
+    stock = first("QuantityAvailable", "QuantityAvailableforPackageType")
+    dk_pn = first("DigiKeyPartNumber", "DigiKeyProductNumber")
+    if dk_pn is None:
+        variations = product.get("ProductVariations")
+        if isinstance(variations, list) and variations and isinstance(variations[0], dict):
+            dk_pn = variations[0].get("DigiKeyProductNumber")
+
+    return ProductInfo(
+        query=query,
+        datasheet_url=_normalize(datasheet) if datasheet else None,
+        product_url=_normalize(product_url) if product_url else None,
+        unit_price=unit_price,
+        currency=currency if unit_price is not None else None,
+        mpn=first("ManufacturerProductNumber", "ManufacturerPartNumber"),
+        manufacturer=manufacturer,
+        description=description,
+        stock=int(stock) if isinstance(stock, (int, float)) else None,
+        supplier="DigiKey",
+        supplier_part_number=dk_pn,
+    )
+
+
+def _price(product: dict) -> float | None:
+    """Best available unit price: the product-level UnitPrice, else the lowest
+    qty-1 standard-pricing break across variations."""
+    top = product.get("UnitPrice")
+    if isinstance(top, (int, float)) and top > 0:
+        return float(top)
+    best = None
+    variations = product.get("ProductVariations")
+    if isinstance(variations, list):
+        for var in variations:
+            if not isinstance(var, dict):
+                continue
+            for brk in var.get("StandardPricing", []) or []:
+                if not isinstance(brk, dict):
+                    continue
+                price = brk.get("UnitPrice")
+                if isinstance(price, (int, float)) and price > 0:
+                    if best is None or price < best:
+                        best = float(price)
+    return best
 
 
 def _normalize(url: str) -> str:
