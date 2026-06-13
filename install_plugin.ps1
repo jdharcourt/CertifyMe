@@ -56,7 +56,48 @@ $engineDst = Join-Path $target "certifyme"
 if (Test-Path $engineDst) { Remove-Item -Recurse -Force $engineDst }
 Copy-Item -Recurse -Force $engineSrc $engineDst
 
-Write-Host "Done. Restart KiCad, then in the PCB Editor use"
-Write-Host "  Tools > External Plugins > CertifyMe: Link Datasheets"
-Write-Host "(or the toolbar button). Put your DigiKey credentials in a .env"
-Write-Host "file in the project folder - see .env.example."
+Write-Host "Plugin files installed."
+Write-Host ""
+
+# --- Optional: capture DigiKey API keys now -------------------------------
+$configDir = Join-Path $env:APPDATA "CertifyMe"
+$configFile = Join-Path $configDir "credentials.env"
+
+Write-Host "DigiKey API credentials"
+Write-Host "  Get a Client ID and Client Secret at https://developer.digikey.com/"
+Write-Host "  (You can also do this later from the plugin dialog or via 'certifyme setup'.)"
+$enter = Read-Host "Enter your DigiKey API keys now? (y/N)"
+
+if ($enter -match '^[Yy]') {
+    $clientId = Read-Host "DigiKey Client ID"
+    $secureSecret = Read-Host "DigiKey Client Secret" -AsSecureString
+    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureSecret)
+    try {
+        $clientSecret = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+    } finally {
+        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+    }
+    $useSandbox = (Read-Host "Use DigiKey sandbox? (y/N)") -match '^[Yy]'
+
+    if ([string]::IsNullOrWhiteSpace($clientId) -or [string]::IsNullOrWhiteSpace($clientSecret)) {
+        Write-Warning "Both a Client ID and Secret are required; skipping key save."
+    } else {
+        New-Item -ItemType Directory -Force -Path $configDir | Out-Null
+        $lines = @(
+            "# CertifyMe DigiKey API credentials",
+            "# Written by install_plugin.ps1. Keep this private.",
+            "",
+            "DIGIKEY_CLIENT_ID=$clientId",
+            "DIGIKEY_CLIENT_SECRET=$clientSecret"
+        )
+        if ($useSandbox) { $lines += "DIGIKEY_SANDBOX=1" }
+        $lines | Set-Content -Path $configFile -Encoding utf8
+        Write-Host "Saved credentials to $configFile"
+    }
+}
+
+Write-Host ""
+Write-Host "Done. Restart KiCad, then in the PCB Editor use:"
+Write-Host "  Tools > External Plugins > CertifyMe: Link Datasheets  (or the toolbar button)"
+Write-Host "You can review/update keys anytime in the plugin's"
+Write-Host "'DigiKey API credentials' panel (Save / Test buttons)."

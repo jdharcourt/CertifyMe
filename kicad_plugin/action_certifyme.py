@@ -27,12 +27,14 @@ import wx
 
 # --- locate the CertifyMe engine ------------------------------------------
 try:  # installed layout: certifyme/ sits next to this file
+    from .certifyme import config
     from .certifyme.linker import PartResult, link_project, summarize
     from .certifyme.providers import build_provider
 except ImportError:  # dev checkout: engine lives in ../src
     _src = os.path.join(os.path.dirname(__file__), "..", "src")
     if _src not in sys.path:
         sys.path.insert(0, _src)
+    from certifyme import config  # type: ignore
     from certifyme.linker import PartResult, link_project, summarize  # type: ignore
     from certifyme.providers import build_provider  # type: ignore
 
@@ -152,6 +154,34 @@ class CertifyMeDialog(wx.Dialog):
             0, wx.ALL, 8,
         )
 
+        # --- DigiKey credentials -----------------------------------------
+        cred_box = wx.StaticBoxSizer(wx.VERTICAL, panel, "DigiKey API credentials")
+        info = config.resolve(project or None)
+        grid = wx.FlexGridSizer(2, 2, 4, 6)
+        grid.AddGrowableCol(1, 1)
+        grid.Add(wx.StaticText(panel, label="Client ID:"), 0, wx.ALIGN_CENTER_VERTICAL)
+        self.id_ctrl = wx.TextCtrl(panel, value=info["client_id"])
+        grid.Add(self.id_ctrl, 1, wx.EXPAND)
+        grid.Add(wx.StaticText(panel, label="Client Secret:"), 0, wx.ALIGN_CENTER_VERTICAL)
+        self.secret_ctrl = wx.TextCtrl(panel, value=info["client_secret"], style=wx.TE_PASSWORD)
+        grid.Add(self.secret_ctrl, 1, wx.EXPAND)
+        cred_box.Add(grid, 0, wx.EXPAND | wx.ALL, 4)
+
+        cred_btns = wx.BoxSizer(wx.HORIZONTAL)
+        self.sandbox_cb = wx.CheckBox(panel, label="Sandbox")
+        self.sandbox_cb.SetValue(info["sandbox"])
+        self.save_btn = wx.Button(panel, label="Save credentials")
+        self.test_btn = wx.Button(panel, label="Test")
+        cred_btns.Add(self.sandbox_cb, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 12)
+        cred_btns.AddStretchSpacer()
+        cred_btns.Add(self.save_btn, 0, wx.RIGHT, 6)
+        cred_btns.Add(self.test_btn, 0)
+        cred_box.Add(cred_btns, 0, wx.EXPAND | wx.ALL, 4)
+        src = "saved" if info["configured"] else "not set - enter keys above"
+        self.cred_status = wx.StaticText(panel, label=f"Status: {src}")
+        cred_box.Add(self.cred_status, 0, wx.ALL, 4)
+        outer.Add(cred_box, 0, wx.EXPAND | wx.ALL, 8)
+
         # Provider
         prov_box = wx.BoxSizer(wx.HORIZONTAL)
         prov_box.Add(wx.StaticText(panel, label="Provider:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6)
@@ -196,10 +226,60 @@ class CertifyMeDialog(wx.Dialog):
 
         panel.SetSizer(outer)
         self.run_btn.Bind(wx.EVT_BUTTON, self.on_run)
+        self.save_btn.Bind(wx.EVT_BUTTON, self.on_save_creds)
+        self.test_btn.Bind(wx.EVT_BUTTON, self.on_test_creds)
 
     def log(self, msg: str) -> None:
         self.log_ctrl.AppendText(msg + "\n")
         wx.GetApp().Yield()
+
+    # -- credential handling ------------------------------------------------
+
+    def _apply_creds_to_env(self) -> None:
+        """Push whatever is currently in the credential fields into the env so a
+        run uses them even if they haven't been saved to disk."""
+        config.load_into_env(self.project or None)
+        cid = self.id_ctrl.GetValue().strip()
+        secret = self.secret_ctrl.GetValue().strip()
+        if cid:
+            os.environ["DIGIKEY_CLIENT_ID"] = cid
+        if secret:
+            os.environ["DIGIKEY_CLIENT_SECRET"] = secret
+        os.environ["DIGIKEY_SANDBOX"] = "1" if self.sandbox_cb.GetValue() else "0"
+
+    def on_save_creds(self, _evt) -> None:
+        cid = self.id_ctrl.GetValue().strip()
+        secret = self.secret_ctrl.GetValue().strip()
+        if not cid or not secret:
+            wx.MessageBox("Enter both a Client ID and Client Secret first.",
+                          "CertifyMe", wx.OK | wx.ICON_WARNING)
+            return
+        # Prefer per-project storage when a project is open, else global.
+        scope = "project" if (self.project and os.path.isdir(self.project)) else "global"
+        path = config.save_credentials(
+            cid, secret, sandbox=self.sandbox_cb.GetValue(),
+            scope=scope, project_dir=self.project or None,
+        )
+        self.cred_status.SetLabel(f"Status: saved to {path}")
+        self.log(f"Saved DigiKey credentials to {path}")
+
+    def on_test_creds(self, _evt) -> None:
+        self._apply_creds_to_env()
+        self.test_btn.Disable()
+        try:
+            provider = build_provider("digikey")
+            url = provider.find_datasheet("STM32F103C8T6")
+            if url:
+                self.cred_status.SetLabel("Status: connection OK")
+                self.log(f"Test OK - example datasheet: {url}")
+            else:
+                self.cred_status.SetLabel("Status: connected (no result for test part)")
+                self.log("Test connected, but no datasheet for the test part.")
+        except Exception as exc:
+            self.cred_status.SetLabel("Status: test failed")
+            self.log(f"Test failed: {exc}")
+        finally:
+            self.test_btn.Enable()
 
     def on_run(self, _evt) -> None:
         self.log_ctrl.SetValue("")
@@ -217,8 +297,8 @@ class CertifyMeDialog(wx.Dialog):
         overwrite = self.overwrite.GetValue()
         prefer_field = self.field_ctrl.GetValue().strip() or None
 
-        # Load .env from the project dir for DigiKey credentials.
-        _load_dotenv(os.path.join(self.project, ".env"))
+        # Use the credential fields (saved or just typed) for this run.
+        self._apply_creds_to_env()
 
         try:
             provider = build_provider(provider_name)
@@ -226,8 +306,9 @@ class CertifyMeDialog(wx.Dialog):
             self.log(f"Cannot start provider '{provider_name}': {exc}")
             if provider_name == "digikey":
                 self.log(
-                    "Create a .env in the project folder with:\n"
-                    "  DIGIKEY_CLIENT_ID=...\n  DIGIKEY_CLIENT_SECRET=...\n"
+                    "Enter your DigiKey Client ID and Secret above, then click "
+                    "'Save credentials' (or 'Test').\n"
+                    "Get keys at https://developer.digikey.com/\n"
                 )
             return
 
@@ -264,15 +345,3 @@ class CertifyMeDialog(wx.Dialog):
         glyph = {"linked": "+", "already": "=", "not-found": "?", "no-key": "-"}.get(r.status, " ")
         if r.status in ("linked", "not-found"):
             self.log(f"  [{glyph}] {r.part.kind:8} {r.part.name:24} {r.url or r.query or ''}")
-
-
-def _load_dotenv(path: str) -> None:
-    if not os.path.exists(path):
-        return
-    with open(path, encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, _, value = line.partition("=")
-            os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))

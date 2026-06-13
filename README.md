@@ -33,37 +33,78 @@ Surfaces it covers:
 | Schematic | `*.kicad_sch` | rewrites `Datasheet` on cached and placed symbols |
 | Live board | open PCB in pcbnew | updates footprint `Datasheet` fields via the KiCad API |
 
-## Install as a KiCad plugin
+## Step 1 — Get DigiKey API keys
+
+The datasheet lookup uses DigiKey's API, which needs a free key pair:
+
+1. Go to <https://developer.digikey.com/> and sign in (create an account if needed).
+2. **Create an Organization**, then **Create a Production App** (or a *Sandbox*
+   app to try it out).
+3. Subscribe the app to **Product Information V4**.
+4. Copy the app's **Client ID** and **Client Secret** — that's all you need.
+
+> Production keys query the real catalog. Sandbox keys hit a test catalog and
+> need the *Sandbox* option ticked wherever you enter them.
+
+## Step 2 — Install the plugin
 
 ```powershell
-# from the repo root
+# from the repo root, in PowerShell
 ./install_plugin.ps1
 ```
 
-This copies the plugin and the bundled engine into KiCad's 3rd-party plugins
-folder (auto-detected for KiCad 7/8/9; override with `-PluginsDir`). Restart
-KiCad, then in the **PCB Editor**:
+This copies the plugin + bundled engine into KiCad's 3rd-party plugins folder
+(auto-detected for KiCad 7/8/9; override with `-PluginsDir`). **The installer
+then offers to save your API keys for you** — just paste the Client ID and
+Secret when prompted (the secret is hidden as you type). You can skip this and
+enter them later.
+
+Restart KiCad, then in the **PCB Editor**:
 
 > **Tools → External Plugins → CertifyMe: Link Datasheets** (or the toolbar button)
 
-A dialog lets you choose the provider, toggle **dry run**, **overwrite**, and
-whether to update the live board and/or the project files. Output is logged in
-the dialog. **Dry run is on by default** — review the log, then untick it to
-write.
+## Step 3 — Enter / check your keys (three easy ways)
 
-## Credentials
+You only need **one** of these — pick whichever you like. All of them write to
+the same secure per-user store, so keys are set once and reused everywhere.
 
-The DigiKey API uses OAuth2 client-credentials. Create an app at
-<https://developer.digikey.com/>, then copy [`.env.example`](.env.example) to
-`.env` in your **project folder**:
+**A. In the plugin dialog (no files to edit).**
+The dialog has a **DigiKey API credentials** panel at the top:
 
-```ini
-DIGIKEY_CLIENT_ID=your-client-id
-DIGIKEY_CLIENT_SECRET=your-client-secret
-# DIGIKEY_SANDBOX=1   # use the sandbox host
+- Paste your **Client ID** and **Client Secret**, tick **Sandbox** if relevant.
+- Click **Test** to verify the keys against the live API.
+- Click **Save credentials** to store them. Done — the status line confirms it.
+
+**B. The installer prompt.** If you answered *yes* during `install_plugin.ps1`,
+your keys are already saved. Nothing more to do.
+
+**C. The setup wizard (CLI).**
+
+```bash
+certifyme setup
 ```
 
-`.env` is gitignored. The plugin and CLI both read it automatically.
+It asks for your Client ID and Secret (secret input is hidden), saves them, and
+runs a live test. Check anytime with:
+
+```bash
+certifyme status      # shows where keys load from, masked
+```
+
+### Where keys are stored & precedence
+
+Keys live in a private per-user file — `%APPDATA%\CertifyMe\credentials.env` on
+Windows, `~/.config/certifyme/credentials.env` elsewhere — written by any of the
+methods above. You never have to hand-edit it.
+
+When a lookup runs, credentials are resolved in this order (first wins):
+
+1. **Environment variables** (`DIGIKEY_CLIENT_ID`, `DIGIKEY_CLIENT_SECRET`) — handy for CI.
+2. **Project `.env`** — per-project keys (use `certifyme setup --project .`). Gitignored.
+3. **Global config** — the per-user file above (the default for `setup` and the plugin).
+
+Manual editing is still supported — copy [`.env.example`](.env.example) to a
+`.env` if you prefer — but it's entirely optional.
 
 ## Command-line use
 
@@ -72,14 +113,18 @@ The same engine runs headless — handy for CI or batch jobs:
 ```bash
 pip install -e .
 
-# dry run, verbose
-certifyme path/to/kicad/project --dry-run -v
+certifyme setup                 # store API keys (interactive)
+certifyme status                # show resolved keys (masked)
 
-# write links, using the "MPN" field as the search key
-certifyme path/to/kicad/project --field MPN
+# link datasheets (these three are equivalent forms of "link"):
+certifyme link path/to/project --dry-run -v
+certifyme path/to/project --dry-run -v      # 'link' may be omitted
+
+# use the "MPN" field as the search key
+certifyme path/to/project --field MPN
 
 # overwrite existing datasheet links
-certifyme path/to/kicad/project --overwrite
+certifyme path/to/project --overwrite
 ```
 
 Offline testing without DigiKey, using a static `{query: url}` map:
@@ -95,7 +140,8 @@ src/certifyme/           # reusable engine (stdlib only, no runtime deps)
   sexpr.py               #   span-preserving S-expression parser + editor
   kicad.py               #   part discovery + in-place Datasheet writing
   linker.py              #   orchestration + reporting
-  cli.py                 #   `certifyme` command
+  config.py              #   API-key storage / resolution (global + project)
+  cli.py                 #   `certifyme` command (setup / status / link)
   providers/             #   DigiKey API client + dummy/offline provider
 kicad_plugin/            # KiCad Action Plugin wrapper (pcbnew + wx)
   action_certifyme.py    #   toolbar button, dialog, live-board update
