@@ -22,6 +22,8 @@ class ProductInfo:
     stock: int | None = None
     supplier: str | None = None
     supplier_part_number: str | None = None
+    package: str | None = None            # package / case, e.g. "0805 (2012 Metric)"
+    parameters: dict | None = None        # parametric specs, e.g. {"Resistance": "10 kOhms"}
 
 
 class DatasheetProvider(ABC):

@@ -2,7 +2,7 @@
 
 A KiCad plugin (plus CLI) for PCB certification automation.
 
-Two tools, one DigiKey-backed engine:
+Tools sharing one DigiKey-backed engine:
 
 - **Datasheet Linker** — scrubs a KiCad project, finds each component, looks up
   its datasheet online via the [DigiKey API](https://developer.digikey.com/),
@@ -11,9 +11,14 @@ Two tools, one DigiKey-backed engine:
 - **BOM Generator** — reads the schematic, groups and counts parts, prices each
   one via DigiKey, and writes a **priced Excel (.xlsx) + CSV** Bill of Materials
   with part links. See [Generate a priced BOM](#generate-a-priced-bom).
-- **Missing-info Highlighter** — outlines footprints on the PCB whose **datasheet**
-  couldn't be found (translucent **white**) or whose **price** couldn't be found
-  (translucent **cyan**), right in the PCB editor. See
+- **BOM Verifier** — cross-checks each BOM part against DigiKey: does the
+  **MPN**, the **value** (e.g. `10k` vs *10 kOhms*), and the **package** (e.g.
+  `0805`) on the schematic/PCB actually match the looked-up part? Mismatches are
+  reported and boxed **magenta** on the board. See
+  [Verify the BOM](#verify-the-bom).
+- **Missing-info Highlighter** — covers footprints on the PCB whose **datasheet**
+  couldn't be found (translucent **white** box) or whose **price** couldn't be
+  found (translucent **cyan** box), right in the PCB editor. See
   [Highlight missing info on the PCB](#highlight-missing-info-on-the-pcb).
 
 ## What it does
@@ -177,30 +182,62 @@ Buy Link · DNP`.
 The `.xlsx` is written with a small built-in OOXML writer (no `openpyxl` or other
 dependency needed), so it works inside KiCad's bundled Python too.
 
+## Verify the BOM
+
+Linking *a* datasheet is only useful if it's the *right* one. The **BOM
+Verifier** confirms that the part on your schematic/PCB actually matches the
+DigiKey product the engine looked up.
+
+**In the plugin:** open the dialog in the **PCB Editor**, enter your DigiKey
+keys, and click **Verify BOM**. **From the CLI:**
+
+```bash
+certifyme verify path/to/project            # exits non-zero if any mismatch
+certifyme verify board.kicad_sch -v         # show every check, not just problems
+certifyme verify project --include-dnp      # also check DNP parts
+```
+
+Four independent checks per BOM line:
+
+| Check | What it compares |
+|---|---|
+| **MPN** | the part's MPN vs DigiKey's manufacturer P/N (a base vs packaged suffix still counts as a match) |
+| **Value** | the component value parsed numerically (`10k`, `4k7`, `100nF`, `0.1µF`) vs DigiKey's **Resistance / Capacitance / Inductance** parameter; non-passive values (e.g. an IC) are confirmed textually |
+| **Package** | a package code from the footprint (`0805`, `SOIC`, `SOT-23`, …) vs DigiKey's **Package / Case** |
+| **Datasheet** | whether a datasheet URL was actually found |
+
+Each line gets a verdict: **OK**, **warn** (couldn't fully confirm), **mismatch**
+(the board contradicts DigiKey — likely a wrong part/value), or **not found**.
+In the plugin, mismatching parts are boxed **magenta** on the board and listed
+for click-to-zoom.
+
 ## Highlight missing info on the PCB
 
 Open the plugin dialog in the **PCB Editor** and click **Highlight Missing**. It
 scans every footprint on the open board, looks each one up via DigiKey, and
-draws a translucent outline around the parts that are missing information:
+covers the parts that are missing information with a **translucent box**:
 
 - **White (30% translucent)** — datasheet could not be found.
 - **Cyan (30% translucent)** — price could not be found.
-- A part missing both gets both outlines.
+- A part missing both gets both boxes.
 
 The flagged parts are also listed in the dialog (Ref · Value · Missing);
 **double-click a row to zoom** straight to that part on the board. **Clear
-Highlights** removes the outlines again.
+Highlights** removes the boxes again.
 
 How it's drawn:
 
-- Outlines are rectangles on the **Eco1.User** (datasheet) and **Eco2.User**
-  (price) layers, grouped so they can be removed cleanly.
-- The translucent white/cyan colours come from setting those two layers to
-  `rgba(255,255,255,0.30)` / `rgba(0,255,255,0.30)` in your active KiCad colour
-  theme. This works automatically when your board uses an editable (non-built-in)
-  colour theme; otherwise the dialog tells you to set those two layer colours
-  once in the **Appearance** panel. If the canvas colours don't update
-  immediately, reopen the board or re-select the theme in Preferences.
+- Boxes are filled rectangles on the **Eco1.User** (datasheet) and **Eco2.User**
+  (price) layers — and **Dwgs.User** (magenta) for verify mismatches — grouped so
+  they can be removed cleanly.
+- The translucent colours come from setting those layers to
+  `rgba(255,255,255,0.30)` / `rgba(0,255,255,0.30)` / `rgba(255,0,255,0.30)` in
+  your active KiCad colour theme. The fill reads as a tint because the layer
+  itself is at 30% opacity. This works automatically when your board uses an
+  editable (non-built-in) colour theme; otherwise the dialog tells you to set
+  those layer colours once in the **Appearance** panel. If the canvas colours
+  don't update immediately, reopen the board or re-select the theme in
+  Preferences.
 
 ## Project layout
 
@@ -210,17 +247,20 @@ src/certifyme/           # reusable engine (stdlib only, no runtime deps)
   kicad.py               #   part discovery + in-place Datasheet writing
   linker.py              #   datasheet-linking orchestration + reporting
   bom.py                 #   BOM: collect, group, price, write xlsx/csv
+  verify.py              #   spec verification (MPN / value / package vs DigiKey)
   xlsx.py                #   dependency-free .xlsx writer
-  highlight.py           #   missing-info classification + outline styles
+  highlight.py           #   missing-info + spec-mismatch classification & styles
   kicad_theme.py         #   reversible board colour-theme editing
   config.py              #   API-key storage / resolution (global + project)
-  cli.py                 #   `certifyme` command (setup / status / link / bom)
+  cli.py                 #   `certifyme` command (setup/status/link/bom/verify)
   providers/             #   DigiKey API client (price + datasheet) + dummy
 kicad_plugin/            # KiCad Action Plugin wrapper (pcbnew + wx)
   action_certifyme.py    #   toolbar button, dialog, live-board update, BOM,
-                         #   PCB missing-info highlighter
+                         #   verify, PCB highlighter (filled translucent boxes)
   metadata.json          #   KiCad Plugin & Content Manager manifest
-install_plugin.ps1       # copies plugin + engine into KiCad's plugins dir
+install_plugin.ps1       # copies plugin + engine into KiCad's plugins dir (Windows)
+install_plugin.sh        # same, for macOS / Linux
+startup.sh               # macOS/Linux setup wizard (install + capture API keys)
 tests/                   # pytest suite (runs fully offline)
 ```
 

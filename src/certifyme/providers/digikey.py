@@ -223,6 +223,12 @@ def _extract_product(payload: dict, query: str, currency: str) -> ProductInfo | 
     datasheet = first("DatasheetUrl", "PrimaryDatasheet", "datasheetUrl")
     product_url = first("ProductUrl", "ProductUrlV4")
     unit_price = _price(product)
+    parameters = _parameters(product)
+    package = (
+        parameters.get("Package / Case")
+        or parameters.get("Supplier Device Package")
+        or parameters.get("Package")
+    )
     stock = first("QuantityAvailable", "QuantityAvailableforPackageType")
     dk_pn = first("DigiKeyPartNumber", "DigiKeyProductNumber")
     if dk_pn is None:
@@ -242,7 +248,24 @@ def _extract_product(payload: dict, query: str, currency: str) -> ProductInfo | 
         stock=int(stock) if isinstance(stock, (int, float)) else None,
         supplier="DigiKey",
         supplier_part_number=dk_pn,
+        package=package,
+        parameters=parameters or None,
     )
+
+
+def _parameters(product: dict) -> dict:
+    """Flatten the v4 ``Parameters`` list into ``{ParameterText: ValueText}``."""
+    out: dict[str, str] = {}
+    params = product.get("Parameters")
+    if isinstance(params, list):
+        for p in params:
+            if not isinstance(p, dict):
+                continue
+            name = p.get("ParameterText") or p.get("Parameter")
+            value = p.get("ValueText") or p.get("Value")
+            if name and value not in (None, "", "-"):
+                out[str(name).strip()] = str(value).strip()
+    return out
 
 
 def _price(product: dict) -> float | None:

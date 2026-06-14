@@ -17,9 +17,9 @@ project's schematic, with part counts, unit/extended prices, stock, and links
 to each part and its datasheet.
 
 Finally, it can **highlight missing info on the board**: footprints whose
-datasheet couldn't be found get a translucent white outline, those whose price
-couldn't be found get a translucent cyan one, with a clickable list to zoom to
-each flagged part.
+datasheet couldn't be found get a translucent white box over them, those whose
+price couldn't be found get a translucent cyan one, with a clickable list to
+zoom to each flagged part.
 
 The engine is imported as a bundled subpackage when installed, or from the
 repo's ``src/`` directory when run from a checkout.
@@ -40,6 +40,7 @@ try:  # installed layout: certifyme/ sits next to this file
     from .certifyme import bom as bom_mod
     from .certifyme import config
     from .certifyme import highlight, kicad_theme
+    from .certifyme import verify as verify_mod
     from .certifyme.linker import PartResult, link_project, summarize
     from .certifyme.providers import build_provider
 except ImportError:  # dev checkout: engine lives in ../src
@@ -49,6 +50,7 @@ except ImportError:  # dev checkout: engine lives in ../src
     from certifyme import bom as bom_mod  # type: ignore
     from certifyme import config  # type: ignore
     from certifyme import highlight, kicad_theme  # type: ignore
+    from certifyme import verify as verify_mod  # type: ignore
     from certifyme.linker import PartResult, link_project, summarize  # type: ignore
     from certifyme.providers import build_provider  # type: ignore
 
@@ -157,13 +159,13 @@ def _update_board(board, provider, *, overwrite, prefer_field, dry_run, log):
 
 
 # --------------------------------------------------------------------------
-# Missing-info highlighter: outline footprints that are missing a datasheet
-# (white) or a price (cyan) with translucent rectangles on user layers.
+# Missing-info highlighter: cover footprints that are missing a datasheet
+# (white) or a price (cyan) with translucent filled boxes on user layers.
 # --------------------------------------------------------------------------
 
 _HL_GROUP_PREFIX = "CertifyMe-Highlight:"
-_HL_OUTLINE_MM = 0.2          # outline line width
-_HL_MARGIN_MM = 0.3           # gap between the part and its outline
+_HL_OUTLINE_MM = 0.2          # box border line width
+_HL_MARGIN_MM = 0.3           # gap between the part and its box
 
 
 def _mm(value_mm: float) -> int:
@@ -236,7 +238,10 @@ def _footprint_bbox(fp):
     return None
 
 
-def _make_outline(board, x0, y0, x1, y1, layer_id):
+def _make_box(board, x0, y0, x1, y1, layer_id):
+    """A filled rectangle covering the part. The fill renders translucent because
+    the user layer it sits on is coloured at ~30% opacity (see _recolor_layers),
+    so it reads as a tint over the footprint rather than a hollow outline."""
     shape = pcbnew.PCB_SHAPE(board)
     rect_t = getattr(pcbnew, "SHAPE_T_RECTANGLE", None) or getattr(pcbnew, "SHAPE_T_RECT", None)
     if rect_t is not None:
@@ -248,10 +253,19 @@ def _make_outline(board, x0, y0, x1, y1, layer_id):
         shape.SetWidth(_mm(_HL_OUTLINE_MM))
     except Exception:
         pass
+    # Fill the box so it tints the whole part; the layer's 30% opacity makes it
+    # translucent. SetFillMode is the newer API; fall back to SetFilled.
     try:
-        shape.SetFilled(False)
+        fill_solid = getattr(pcbnew, "FILL_T_FILLED_SHAPE", None)
+        if fill_solid is not None and hasattr(shape, "SetFillMode"):
+            shape.SetFillMode(fill_solid)
+        else:
+            shape.SetFilled(True)
     except Exception:
-        pass
+        try:
+            shape.SetFilled(True)
+        except Exception:
+            pass
     return shape
 
 
@@ -278,7 +292,7 @@ def draw_highlights(board, flagged, styles=None) -> int:
                 group.SetName(_HL_GROUP_PREFIX + flag)
                 board.Add(group)
                 groups[flag] = group
-            shape = _make_outline(board, x0, y0, x1, y1, layer_id)
+            shape = _make_box(board, x0, y0, x1, y1, layer_id)
             board.Add(shape)
             try:
                 group.AddItem(shape)
@@ -406,7 +420,8 @@ class CertifyMeDialog(wx.Dialog):
 
         # Flagged-parts list (the PCB-highlight interface). Double-click zooms.
         outer.Add(
-            wx.StaticText(panel, label="Missing info (white = datasheet, cyan = price):"),
+            wx.StaticText(panel, label="Flagged parts (double-click to zoom) — "
+                          "missing: white=datasheet, cyan=price; verify: magenta=mismatch:"),
             0, wx.LEFT | wx.RIGHT, 8,
         )
         self.flag_list = wx.ListCtrl(panel, style=wx.LC_REPORT | wx.LC_SINGLE_SEL, size=(-1, 120))
@@ -420,6 +435,7 @@ class CertifyMeDialog(wx.Dialog):
         btns = wx.BoxSizer(wx.HORIZONTAL)
         self.run_btn = wx.Button(panel, label="Link Datasheets")
         self.bom_btn = wx.Button(panel, label="Generate BOM...")
+        self.verify_btn = wx.Button(panel, label="Verify BOM")
         self.hl_btn = wx.Button(panel, label="Highlight Missing")
         self.clear_btn = wx.Button(panel, label="Clear Highlights")
         close_btn = wx.Button(panel, id=wx.ID_CANCEL, label="Close")
@@ -428,12 +444,14 @@ class CertifyMeDialog(wx.Dialog):
         btns.AddStretchSpacer()
         btns.Add(self.run_btn, 0, wx.RIGHT, 6)
         btns.Add(self.bom_btn, 0, wx.RIGHT, 6)
+        btns.Add(self.verify_btn, 0, wx.RIGHT, 6)
         btns.Add(close_btn, 0)
         outer.Add(btns, 0, wx.EXPAND | wx.ALL, 8)
 
         panel.SetSizer(outer)
         self.run_btn.Bind(wx.EVT_BUTTON, self.on_run)
         self.bom_btn.Bind(wx.EVT_BUTTON, self.on_bom)
+        self.verify_btn.Bind(wx.EVT_BUTTON, self.on_verify)
         self.hl_btn.Bind(wx.EVT_BUTTON, self.on_highlight)
         self.clear_btn.Bind(wx.EVT_BUTTON, self.on_clear_highlights)
         self.flag_list.Bind(wx.EVT_LIST_ITEM_ACTIVATED, self.on_zoom_to_part)
@@ -561,6 +579,96 @@ class CertifyMeDialog(wx.Dialog):
         self.log("\n" + bom_mod.summarize(bom))
         self.log(f"\nWrote:\n  {out_path}\n  {csv_path}")
 
+    # -- BOM verification ---------------------------------------------------
+
+    def on_verify(self, _evt) -> None:
+        self.log_ctrl.SetValue("")
+        self.verify_btn.Disable()
+        try:
+            self._do_verify()
+        except Exception:
+            self.log("ERROR:\n" + traceback.format_exc())
+        finally:
+            self.verify_btn.Enable()
+
+    def _do_verify(self) -> None:
+        provider_name = self.provider_choice.GetStringSelection()
+        self._apply_creds_to_env()
+        try:
+            provider = build_provider(provider_name)
+        except Exception as exc:
+            self.log(f"Cannot start provider '{provider_name}': {exc}")
+            self.log("Enter your DigiKey keys above (Save / Test), then retry.")
+            return
+        if not self.project or not os.path.isdir(self.project):
+            self.log("Save the project first so its schematic/board can be verified.")
+            return
+
+        self.log("Verifying BOM parts against DigiKey (MPN / value / package)...\n")
+        bom = bom_mod.build_bom(Path(self.project), provider)
+        if not bom.lines:
+            self.log("No components found in the project to verify.")
+            return
+        verdicts = verify_mod.verify_bom(bom)
+
+        # Report: list everything that isn't a clean pass.
+        problems = [v for v in verdicts if v.status != verify_mod.V_OK]
+        for v in problems:
+            badge = {
+                verify_mod.V_FAIL: "MISMATCH",
+                verify_mod.V_WARN: "warn",
+                verify_mod.V_NO_MATCH: "not found",
+            }.get(v.status, v.status)
+            self.log(f"  [{badge}] {v.refs_text}  {v.value}  {v.mpn}")
+            for msg in v.problems:
+                self.log(f"        - {msg}")
+        self.log("\n" + verify_mod.summarize(verdicts))
+
+        # Box the parts whose board specs contradict DigiKey (magenta) so they
+        # can be found on the canvas, and list them for click-to-zoom.
+        board = pcbnew.GetBoard()
+        fails = [v for v in verdicts if v.status == verify_mod.V_FAIL]
+        ref_to_fp = self._ref_to_fp(board)
+        self._populate_verify_list(problems, ref_to_fp)
+
+        if board is not None and fails:
+            clear_highlights(board)
+            flagged = []
+            for v in fails:
+                for ref in v.references:
+                    fp = ref_to_fp.get(ref)
+                    if fp is not None:
+                        flagged.append({"fp": fp, "ref": ref, "value": v.value,
+                                        "flags": {highlight.FLAG_SPEC}})
+            drawn = draw_highlights(board, flagged, styles=highlight.SPEC_STYLES)
+            self.log(f"\nBoxed {drawn} mismatching part(s) in magenta on the board.")
+            self._recolor_layers(highlight.SPEC_STYLES)
+            self.log("Tip: double-click a row above to zoom to that part.")
+        elif fails:
+            self.log("\n(Open the board in the PCB editor to box mismatches on the canvas.)")
+
+    def _ref_to_fp(self, board) -> dict:
+        out: dict[str, object] = {}
+        if board is None:
+            return out
+        for fp in board.GetFootprints():
+            try:
+                out[fp.GetReference()] = fp
+            except Exception:
+                pass
+        return out
+
+    def _populate_verify_list(self, verdicts, ref_to_fp) -> None:
+        self.flag_list.DeleteAllItems()
+        self._flag_fps = []
+        for v in verdicts:
+            summary = "; ".join(v.problems) or v.status
+            row = self.flag_list.InsertItem(self.flag_list.GetItemCount(), v.refs_text)
+            self.flag_list.SetItem(row, 1, v.value)
+            self.flag_list.SetItem(row, 2, summary)
+            fp = next((ref_to_fp.get(r) for r in v.references if ref_to_fp.get(r)), None)
+            self._flag_fps.append(fp)
+
     # -- PCB highlighting ---------------------------------------------------
 
     def on_highlight(self, _evt) -> None:
@@ -605,22 +713,33 @@ class CertifyMeDialog(wx.Dialog):
         self._recolor_layers()
         self.log("\nTip: double-click a row above to zoom to that part.")
 
-    def _recolor_layers(self) -> None:
-        """Make Eco1.User white@30% and Eco2.User cyan@30% if the theme allows."""
-        mapping = {s.theme_key: s.rgba for s in highlight.DEFAULT_STYLES.values()}
+    def _recolor_layers(self, styles=None) -> None:
+        """Set the user layers used by *styles* to their translucent colours if
+        the active theme is editable (defaults to the missing-info styles)."""
+        styles = styles or highlight.DEFAULT_STYLES
+        mapping = {s.theme_key: s.rgba for s in styles.values()}
         theme = kicad_theme.find_color_theme()
         if theme is None:
+            names = ", ".join(f"'{s.layer.replace('_', '.')}'" for s in styles.values())
             self.log(
-                "\nColours: couldn't auto-set them (built-in/locked theme). In the "
-                "Appearance panel set 'Eco1.User' to white and 'Eco2.User' to cyan "
-                "at ~30% opacity to match."
+                f"\nColours: couldn't auto-set them (built-in/locked theme). In the "
+                f"Appearance panel set {names} at ~30% opacity to match."
             )
             return
         try:
-            self._theme_prev = kicad_theme.apply_highlight_colors(theme, mapping)
+            prev = kicad_theme.apply_highlight_colors(theme, mapping)
+            # Merge with anything already saved so a later pass (e.g. verify after
+            # missing-info) doesn't lose the original colours of other layers.
+            if self._theme_prev is None:
+                self._theme_prev = {}
+            for key, val in prev.items():
+                self._theme_prev.setdefault(key, val)
             self._theme_path = theme
+            applied = ", ".join(
+                f"{s.layer.replace('_', '.')} ({s.label})" for s in styles.values()
+            )
             self.log(
-                f"\nColours: set Eco1.User=white@30%, Eco2.User=cyan@30% in {theme.name}. "
+                f"\nColours: set {applied} @30% in {theme.name}. "
                 "If the canvas colours don't change, reopen the board or re-select the "
                 "colour theme in Preferences."
             )
@@ -654,8 +773,12 @@ class CertifyMeDialog(wx.Dialog):
     def on_zoom_to_part(self, evt) -> None:
         idx = evt.GetIndex()
         if 0 <= idx < len(self._flag_fps):
+            fp = self._flag_fps[idx]
+            if fp is None:
+                self.log("That part isn't on the open board (schematic-only).")
+                return
             try:
-                pcbnew.FocusOnItem(self._flag_fps[idx])
+                pcbnew.FocusOnItem(fp)
                 pcbnew.Refresh()
             except Exception:
                 self.log("Could not zoom to the selected part (API unavailable).")

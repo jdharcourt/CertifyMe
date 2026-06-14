@@ -17,6 +17,7 @@ from .kicad import _GENERIC_VALUES, MPN_FIELDS
 
 FLAG_DATASHEET = "datasheet"
 FLAG_PRICE = "price"
+FLAG_SPEC = "spec"          # the part's specs contradict DigiKey (from verify)
 
 
 def search_key(props: dict, value: str | None = None) -> str | None:
@@ -62,14 +63,23 @@ class CategoryStyle:
     label: str
 
 
-# Datasheet-missing -> translucent white on Eco1.User.
-# Price-missing      -> translucent cyan  on Eco2.User.
+# Datasheet-missing -> translucent white   on Eco1.User.
+# Price-missing      -> translucent cyan    on Eco2.User.
 DEFAULT_STYLES: dict[str, CategoryStyle] = {
     FLAG_DATASHEET: CategoryStyle(
         FLAG_DATASHEET, "Eco1_User", "eco1_user", "rgba(255, 255, 255, 0.30)", "datasheet missing"
     ),
     FLAG_PRICE: CategoryStyle(
         FLAG_PRICE, "Eco2_User", "eco2_user", "rgba(0, 255, 255, 0.30)", "price missing"
+    ),
+}
+
+# Spec-mismatch -> translucent magenta on Dwgs.User. Kept out of DEFAULT_STYLES
+# so the missing-info highlighter doesn't touch a third layer; the verify flow
+# passes this explicitly.
+SPEC_STYLES: dict[str, CategoryStyle] = {
+    FLAG_SPEC: CategoryStyle(
+        FLAG_SPEC, "Dwgs_User", "dwgs_user", "rgba(255, 0, 255, 0.30)", "spec mismatch"
     ),
 }
 

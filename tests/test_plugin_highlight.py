@@ -87,6 +87,7 @@ def plugin(monkeypatch):
     fake_pcb.SHAPE_T_RECTANGLE = object()
     fake_pcb.Eco1_User = 60
     fake_pcb.Eco2_User = 61
+    fake_pcb.Dwgs_User = 62
     fake_pcb.Refresh = lambda: None
     fake_pcb.GetBoard = lambda: None
     monkeypatch.setitem(sys.modules, "pcbnew", fake_pcb)
@@ -146,3 +147,26 @@ def test_draw_and_clear_highlights(plugin):
     removed = plugin.clear_highlights(board)
     assert removed == 4
     assert board.shapes == [] and board.groups == []
+
+
+def test_highlight_boxes_are_filled_translucent(plugin):
+    """The highlight covers the part with a filled box (translucent via the
+    layer colour), not a hollow outline."""
+    board = _board()
+    flagged = plugin.scan_missing(board, _provider())
+    plugin.draw_highlights(board, flagged)
+    assert board.shapes, "expected highlight shapes"
+    assert all(getattr(s, "filled", False) is True for s in board.shapes)
+
+
+def test_spec_style_uses_third_layer(plugin):
+    """Verify mismatches draw on Dwgs.User (magenta), separate from the
+    missing-info layers."""
+    board = _board()
+    fp = board.GetFootprints()[0]
+    flagged = [{"fp": fp, "ref": "U1", "value": "LM358",
+                "flags": {plugin.highlight.FLAG_SPEC}}]
+    drawn = plugin.draw_highlights(board, flagged, styles=plugin.highlight.SPEC_STYLES)
+    assert drawn == 1
+    assert board.shapes[0].layer == 62                       # Dwgs_User
+    assert board.groups[0].GetName() == "CertifyMe-Highlight:spec"

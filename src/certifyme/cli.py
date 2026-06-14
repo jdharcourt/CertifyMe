@@ -5,6 +5,8 @@ Subcommands:
     certifyme setup            interactive wizard to store your DigiKey API keys
     certifyme status           show where keys are loaded from (masked)
     certifyme link <project>   scan a project and link datasheets
+    certifyme bom <project>    generate a priced Excel/CSV BOM
+    certifyme verify <project> cross-check each BOM part's specs against DigiKey
 
 ``certifyme <project> ...`` (no subcommand) is accepted as shorthand for ``link``.
 """
@@ -19,6 +21,7 @@ from pathlib import Path
 
 from . import bom as bom_mod
 from . import config
+from . import verify as verify_mod
 from .linker import PartResult, link_project, summarize
 from .providers import build_provider
 
@@ -29,7 +32,7 @@ _STATUS_GLYPH = {
     "no-key": "-",
 }
 
-_SUBCOMMANDS = {"setup", "status", "link", "bom"}
+_SUBCOMMANDS = {"setup", "status", "link", "bom", "verify"}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -67,6 +70,18 @@ def build_parser() -> argparse.ArgumentParser:
     bm = sub.add_parser("bom", help="Generate a priced Excel BOM.")
     _add_bom_args(bm)
     bm.set_defaults(func=cmd_bom)
+
+    # verify
+    vf = sub.add_parser(
+        "verify",
+        help="Cross-check each BOM part's MPN/value/package against DigiKey.",
+    )
+    vf.add_argument("project", type=Path, help="KiCad project directory or a .kicad_sch/.kicad_pcb file.")
+    vf.add_argument("--provider", default="digikey", help="'digikey' (default) or 'dummy'.")
+    vf.add_argument("--dummy-map", type=Path, help="With --provider dummy: JSON {query: fields}.")
+    vf.add_argument("--include-dnp", action="store_true", help="Also verify DNP parts.")
+    vf.add_argument("-v", "--verbose", action="store_true", help="Show every check, not just problems.")
+    vf.set_defaults(func=cmd_verify)
 
     return p
 
@@ -291,6 +306,58 @@ def cmd_bom(args) -> int:
     for w in written:
         print(f"  {w}")
     return 0
+
+
+# -- verify -----------------------------------------------------------------
+
+def cmd_verify(args) -> int:
+    if not args.project.exists():
+        print(f"error: path not found: {args.project}", file=sys.stderr)
+        return 2
+
+    project_dir = args.project if args.project.is_dir() else args.project.parent
+    config.load_into_env(project_dir)
+
+    provider_kwargs = {}
+    if args.provider == "dummy":
+        mapping = {}
+        if args.dummy_map and args.dummy_map.exists():
+            mapping = json.loads(args.dummy_map.read_text(encoding="utf-8"))
+        provider_kwargs["mapping"] = mapping
+
+    try:
+        provider = build_provider(args.provider, **provider_kwargs)
+    except Exception as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        if args.provider == "digikey":
+            print("\nNo API keys found. Run:  certifyme setup", file=sys.stderr)
+        return 2
+
+    bom = bom_mod.build_bom(args.project, provider)
+    if not bom.lines:
+        print("No components found to verify.", file=sys.stderr)
+        return 1
+
+    verdicts = verify_mod.verify_bom(bom, include_dnp=args.include_dnp)
+    _badge = {
+        verify_mod.V_OK: "OK  ",
+        verify_mod.V_WARN: "WARN",
+        verify_mod.V_FAIL: "FAIL",
+        verify_mod.V_NO_MATCH: "MISS",
+    }
+    for v in verdicts:
+        if v.status == verify_mod.V_OK and not args.verbose:
+            continue
+        print(f"[{_badge.get(v.status, '?')}] {v.refs_text:14} {v.value:14} {v.mpn}")
+        details = v.checks if args.verbose else [
+            c for c in v.checks if c.status in (verify_mod.MISMATCH, verify_mod.MISSING)
+        ]
+        for c in details:
+            print(f"        - {c.name}: {c.status} ({c.detail})")
+
+    print("\n" + verify_mod.summarize(verdicts))
+    # Non-zero exit if any part's board data contradicts DigiKey.
+    return 1 if verify_mod.counts(verdicts)[verify_mod.V_FAIL] else 0
 
 
 def _safe_relpath(file: Path, project: Path) -> str:
