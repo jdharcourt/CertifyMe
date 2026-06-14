@@ -24,11 +24,11 @@ $repo = Split-Path -Parent $MyInvocation.MyCommand.Path
 function Find-KiCadPluginsDir {
     $docs = [Environment]::GetFolderPath("MyDocuments")
     $candidates = @()
-    foreach ($ver in @("9.0", "8.0", "7.0")) {
+    foreach ($ver in @("10.0", "9.0", "8.0", "7.0")) {
         $candidates += Join-Path $docs "KiCad\$ver\3rdparty\plugins"
     }
     # Fall back to the scripting plugins dir.
-    foreach ($ver in @("9.0", "8.0", "7.0")) {
+    foreach ($ver in @("10.0", "9.0", "8.0", "7.0")) {
         $candidates += Join-Path $env:APPDATA "kicad\$ver\scripting\plugins"
     }
     foreach ($c in $candidates) {

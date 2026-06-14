@@ -27,6 +27,7 @@ from .providers import build_provider
 
 _STATUS_GLYPH = {
     "linked": "+",
+    "linked-generic": "!",
     "already": "=",
     "not-found": "?",
     "no-key": "-",
@@ -97,6 +98,12 @@ def _add_link_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--dry-run", action="store_true", help="Resolve and report, write nothing.")
     p.add_argument("--overwrite", action="store_true", help="Replace existing Datasheet values.")
     p.add_argument("--field", dest="prefer_field", help="Property to use as the search key (e.g. MPN).")
+    p.add_argument(
+        "--guess-datasheets",
+        action="store_true",
+        help="For parts DigiKey can't match, write a representative same-type "
+        "datasheet (e.g. '10k resistor 0805'); these are approximate.",
+    )
     p.add_argument("-v", "--verbose", action="store_true", help="Print one line per part.")
 
 
@@ -114,6 +121,12 @@ def _add_bom_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--provider", default="digikey", help="'digikey' (default) or 'dummy'.")
     p.add_argument("--dummy-map", type=Path, help="With --provider dummy: JSON {query: url|fields}.")
     p.add_argument("--currency", default="USD", help="Currency label for the BOM (default: USD).")
+    p.add_argument(
+        "--guess-datasheets",
+        action="store_true",
+        help="For parts DigiKey can't match, find a representative part of the same "
+        "type (e.g. '10k resistor 0805') and use its datasheet, marked generic.",
+    )
     p.add_argument("-v", "--verbose", action="store_true", help="Print one line per BOM entry.")
 
 
@@ -253,6 +266,7 @@ def cmd_link(args) -> int:
         dry_run=args.dry_run,
         overwrite=args.overwrite,
         prefer_field=args.prefer_field,
+        guess_datasheets=args.guess_datasheets,
         on_event=on_event,
     )
 
@@ -293,7 +307,13 @@ def cmd_bom(args) -> int:
         price = f"{line.unit_price:.4f}" if line.unit_price is not None else "    -   "
         print(f"  {line.quantity:>3}x  {line.value:16} {line.mpn:18} {price}  [{line.refs_text}]")
 
-    bom = bom_mod.build_bom(args.project, provider, currency=args.currency, on_event=on_event)
+    bom = bom_mod.build_bom(
+        args.project,
+        provider,
+        currency=args.currency,
+        guess_datasheets=args.guess_datasheets,
+        on_event=on_event,
+    )
 
     if not bom.lines:
         print("No components found. Point at a project with a .kicad_sch (or a "

@@ -17,7 +17,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import xlsx
+from . import parttype, xlsx
 from .kicad import MPN_FIELDS, _GENERIC_VALUES
 from .providers.base import DatasheetProvider, ProductInfo
 from .sexpr import Atom, SExp, parse
@@ -85,6 +85,13 @@ class Bom:
     @property
     def priced_lines(self) -> int:
         return sum(1 for l in self.lines if l.unit_price is not None)
+
+    @property
+    def generic_lines(self) -> int:
+        return sum(
+            1 for l in self.lines
+            if l.product is not None and getattr(l.product, "approximate", False)
+        )
 
 
 # -- component collection ---------------------------------------------------
@@ -235,6 +242,7 @@ def build_bom(
     provider: DatasheetProvider,
     *,
     currency: str = "USD",
+    guess_datasheets: bool = False,
     on_event=None,
 ) -> Bom:
     components, source = collect_components(project)
@@ -253,9 +261,40 @@ def build_bom(
                 line.product = provider.find_product(key)
             except Exception:
                 line.product = None
+        if guess_datasheets and (line.product is None or not line.product.datasheet_url):
+            _guess_generic_datasheet(line, provider)
         if on_event:
             on_event(line)
     return bom
+
+
+def _guess_generic_datasheet(line: BomLine, provider: DatasheetProvider) -> None:
+    """Fallback for a part with no datasheet: search for a representative part of
+    the same class (e.g. ``10k resistor 0805``) and borrow just its datasheet,
+    flagged approximate so it's never mistaken for the exact part. Any real
+    price/stock/MPN already found for the part is kept, so BOM totals stay honest."""
+    query = parttype.generic_query(line)
+    if not query:
+        return
+    try:
+        candidate = provider.find_product(query)
+    except Exception:
+        candidate = None
+    if not candidate or not candidate.datasheet_url:
+        return
+    if line.product is None:
+        line.product = ProductInfo(
+            query=query,
+            datasheet_url=candidate.datasheet_url,
+            description=candidate.description,
+            manufacturer=candidate.manufacturer,
+            approximate=True,
+        )
+    else:
+        # Exact part was found but lacked a datasheet: keep its commercial data,
+        # only fill in the (approximate) datasheet.
+        line.product.datasheet_url = candidate.datasheet_url
+        line.product.approximate = True
 
 
 # -- output -----------------------------------------------------------------
@@ -311,7 +350,10 @@ def write_xlsx_bom(bom: Bom, path) -> None:
             xlsx.number(line.ext_price, xlsx.STYLE_MONEY2) if line.ext_price is not None else xlsx.text(""),
             xlsx.number(p.stock) if (p and p.stock is not None) else xlsx.text(""),
             xlsx.text(p.supplier_part_number if p else ""),
-            xlsx.hyperlink(p.datasheet_url, "Datasheet") if (p and p.datasheet_url) else xlsx.text(""),
+            xlsx.hyperlink(
+                p.datasheet_url,
+                "Datasheet (generic)" if p.approximate else "Datasheet",
+            ) if (p and p.datasheet_url) else xlsx.text(""),
             xlsx.hyperlink(p.product_url, "Buy") if (p and p.product_url) else xlsx.text(""),
             xlsx.text("DNP" if line.dnp else ""),
         ])
@@ -374,4 +416,6 @@ def summarize(bom: Bom) -> str:
         f"Priced lines  : {bom.priced_lines}/{len(bom.lines)}",
         f"Total cost    : {bom.total_cost:.2f} {bom.currency}",
     ]
+    if bom.generic_lines:
+        lines.append(f"Generic d/s   : {bom.generic_lines}  (approximate - verify before use)")
     return "\n".join(lines)

@@ -22,15 +22,15 @@ find_plugins_dir() {
         bases+=("$HOME/.local/share/kicad")
     fi
     for base in "${bases[@]}"; do
-        for ver in 9.0 8.0 7.0; do
+        for ver in 10.0 9.0 8.0 7.0; do
             if [[ -d "$base/$ver" ]]; then
                 echo "$base/$ver/3rdparty/plugins"
                 return 0
             fi
         done
     done
-    # Fall back to KiCad 9 on macOS.
-    echo "$HOME/Documents/KiCad/9.0/3rdparty/plugins"
+    # Fall back to KiCad 10 on macOS.
+    echo "$HOME/Documents/KiCad/10.0/3rdparty/plugins"
 }
 
 plugins_dir="${1:-$(find_plugins_dir)}"

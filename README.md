@@ -22,6 +22,11 @@ Tools sharing one DigiKey-backed engine:
   couldn't be found (translucent **white** box) or whose **price** couldn't be
   found (translucent **cyan** box), right in the PCB editor. See
   [Highlight missing info on the PCB](#highlight-missing-info-on-the-pcb).
+- **Generic datasheet fallback** — for parts DigiKey can't match exactly,
+  optionally look up a *representative* part of the same type and package (e.g.
+  `10k resistor 0805`) and use its datasheet, clearly flagged as **approximate**.
+  Applies to both datasheet linking and the BOM. See
+  [Guess datasheets for unfound parts](#guess-datasheets-for-unfound-parts).
 
 ## What it does
 
@@ -69,7 +74,7 @@ The datasheet lookup uses DigiKey's API, which needs a free key pair:
 ```
 
 This copies the plugin + bundled engine into KiCad's 3rd-party plugins folder
-(auto-detected for KiCad 7/8/9; override with `-PluginsDir`). **The installer
+(auto-detected for KiCad 7/8/9/10; override with `-PluginsDir`). **The installer
 then offers to save your API keys for you** — just paste the Client ID and
 Secret when prompted (the secret is hidden as you type). You can skip this and
 enter them later.
@@ -140,6 +145,9 @@ certifyme path/to/project --field MPN
 
 # overwrite existing datasheet links
 certifyme path/to/project --overwrite
+
+# for parts DigiKey can't match, write a generic same-type datasheet (approximate)
+certifyme path/to/project --guess-datasheets
 ```
 
 Offline testing without DigiKey, using a static `{query: url}` map:
@@ -162,6 +170,7 @@ save the `.xlsx`; a matching `.csv` is written alongside it.
 certifyme bom path/to/project                 # writes <project>-BOM.xlsx
 certifyme bom path/to/project -o costed.xlsx --csv -v
 certifyme bom board.kicad_sch --currency EUR
+certifyme bom path/to/project --guess-datasheets   # generic datasheet fallback
 ```
 
 How it works:
@@ -183,6 +192,44 @@ Buy Link · DNP`.
 
 The `.xlsx` is written with a small built-in OOXML writer (no `openpyxl` or other
 dependency needed), so it works inside KiCad's bundled Python too.
+
+## Guess datasheets for unfound parts
+
+Sometimes DigiKey has no match for a part's exact value or MPN — common for
+generic passives, or parts entered with a non-catalog value. With **datasheet
+guessing** enabled, CertifyMe infers the part's class and looks up a
+*representative* part of the same type and package instead:
+
+1. The **reference designator** gives the type (`R`→resistor, `C`→capacitor,
+   `L`→inductor, `D`→diode, `Q`→transistor, `Y`/`X`→crystal, `FB`→ferrite bead…).
+2. The **footprint** gives the package (`0805`, `SOT-23`, `SOD-123`…).
+3. A keyword search like `10k resistor 0805` returns a representative part, and
+   its datasheet is borrowed.
+
+The result is always marked **approximate** so it's never mistaken for the exact
+part:
+
+- in logs it shows as `[!] … (generic - verify)`;
+- in the **BOM** the datasheet cell reads **"Datasheet (generic)"** and the
+  summary reports a `Generic d/s` count;
+- in the plugin dialog an **orange ! icon** sits next to the toggle — hover it for
+  the "may not be the exact part — verify before use" reminder.
+
+**Guard-rails:** only parts a value + package genuinely identify are guessed —
+**passives and simple discretes**. ICs, connectors, and modules without an MPN
+are deliberately left unfound (a generic datasheet for "some op-amp" would be
+misleading). A part that needs a real value to anchor on (a blank/`~` value) is
+also skipped. When an exact part *was* found but simply lacked a datasheet, its
+real price/stock/MPN are kept and only the datasheet is filled in, so BOM totals
+stay honest.
+
+**Turn it on:**
+
+- **Plugin:** the **"Guess datasheets for unfound parts (BOM + datasheet
+  linking)"** checkbox — one switch for datasheet linking, the live board, and
+  the BOM. (On by default.)
+- **CLI:** the `--guess-datasheets` flag on `certifyme link` and `certifyme bom`
+  (opt-in).
 
 ## Verify the BOM
 
@@ -249,6 +296,7 @@ src/certifyme/           # reusable engine (stdlib only, no runtime deps)
   kicad.py               #   part discovery + in-place Datasheet writing
   linker.py              #   datasheet-linking orchestration + reporting
   bom.py                 #   BOM: collect, group, price, write xlsx/csv
+  parttype.py            #   infer part type/package for generic datasheet guessing
   verify.py              #   spec verification (MPN / value / package vs DigiKey)
   xlsx.py                #   dependency-free .xlsx writer
   highlight.py           #   missing-info + spec-mismatch classification & styles

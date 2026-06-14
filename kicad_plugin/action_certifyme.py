@@ -39,7 +39,7 @@ import wx
 try:  # installed layout: certifyme/ sits next to this file
     from .certifyme import bom as bom_mod
     from .certifyme import config
-    from .certifyme import highlight, kicad_theme
+    from .certifyme import highlight, kicad_theme, parttype
     from .certifyme import verify as verify_mod
     from .certifyme.linker import PartResult, link_project, summarize
     from .certifyme.open_file import open_file
@@ -50,7 +50,7 @@ except ImportError:  # dev checkout: engine lives in ../src
         sys.path.insert(0, _src)
     from certifyme import bom as bom_mod  # type: ignore
     from certifyme import config  # type: ignore
-    from certifyme import highlight, kicad_theme  # type: ignore
+    from certifyme import highlight, kicad_theme, parttype  # type: ignore
     from certifyme import verify as verify_mod  # type: ignore
     from certifyme.linker import PartResult, link_project, summarize  # type: ignore
     from certifyme.open_file import open_file  # type: ignore
@@ -96,6 +96,36 @@ def _run() -> None:
         dlg.Destroy()
 
 
+def _warning_bitmap(size: int = 16) -> "wx.Bitmap":
+    """A small orange circle with a white exclamation mark, drawn at runtime so
+    the plugin needs no icon asset shipped alongside it."""
+    bmp = wx.Bitmap(size, size)
+    dc = wx.MemoryDC(bmp)
+    try:
+        # Transparent-ish background: paint the panel's face colour then the circle.
+        bg = wx.SystemSettings.GetColour(wx.SYS_COLOUR_BTNFACE)
+        dc.SetBackground(wx.Brush(bg))
+        dc.Clear()
+        gc = wx.GraphicsContext.Create(dc)
+        if gc:
+            gc.SetBrush(wx.Brush(wx.Colour(0xF5, 0x9E, 0x0B)))  # amber/orange
+            gc.SetPen(wx.Pen(wx.Colour(0xB4, 0x6F, 0x00)))
+            gc.DrawEllipse(0.5, 0.5, size - 1.5, size - 1.5)
+            gc.SetFont(
+                wx.Font(
+                    int(size * 0.7), wx.FONTFAMILY_DEFAULT,
+                    wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD,
+                ),
+                wx.Colour(0xFF, 0xFF, 0xFF),
+            )
+            tw, th = gc.GetTextExtent("!")[:2]
+            gc.DrawText("!", (size - tw) / 2.0, (size - th) / 2.0)
+    finally:
+        dc.SelectObject(wx.NullBitmap)
+    bmp.SetMaskColour(wx.SystemSettings.GetColour(wx.SYS_COLOUR_BTNFACE))
+    return bmp
+
+
 # --------------------------------------------------------------------------
 # Live-board footprint helpers (pcbnew API shapes vary across KiCad versions,
 # so every access is guarded).
@@ -110,7 +140,17 @@ def _fp_fields(fp) -> dict:
     return {}
 
 
-def _update_board(board, provider, *, overwrite, prefer_field, dry_run, log):
+def _fp_footprint_name(fp) -> str:
+    """The footprint's library item name (e.g. ``R_0805_2012Metric``), guarded
+    against pcbnew API differences. Used for generic package inference."""
+    try:
+        fpid = fp.GetFPID()
+        return str(fpid.GetLibItemName()) if fpid else ""
+    except Exception:
+        return ""
+
+
+def _update_board(board, provider, *, overwrite, prefer_field, dry_run, guess_datasheets, log):
     """Best-effort live update of footprints on the open board."""
     linked = 0
     if board is None:
@@ -142,10 +182,22 @@ def _update_board(board, provider, *, overwrite, prefer_field, dry_run, log):
             continue
 
         url = provider.find_datasheet(key)
+        generic = False
+        if not url and guess_datasheets:
+            try:
+                value = fp.GetValue().strip()
+            except Exception:
+                value = ""
+            gq = parttype.generic_query_from(fp.GetReference(), value, _fp_footprint_name(fp))
+            if gq:
+                url = provider.find_datasheet(gq)
+                generic = bool(url)
         if not url:
             log(f"  [?] {fp.GetReference():6} {key}  (no datasheet found)")
             continue
-        log(f"  [+] {fp.GetReference():6} {key} -> {url}")
+        tag = "!" if generic else "+"
+        suffix = "  (generic - verify)" if generic else ""
+        log(f"  [{tag}] {fp.GetReference():6} {key} -> {url}{suffix}")
         linked += 1
         if not dry_run and ds_field is not None:
             try:
@@ -439,6 +491,23 @@ class CertifyMeDialog(wx.Dialog):
         self.open_after_bom.SetValue(True)
         outer.Add(self.open_after_bom, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
 
+        # For parts DigiKey can't match, look up a representative part of the same
+        # type (e.g. "10k resistor 0805") and use its datasheet, marked generic.
+        # Applies to both "Link Datasheets" and "Generate BOM".
+        guess_row = wx.BoxSizer(wx.HORIZONTAL)
+        self.guess_datasheets = wx.CheckBox(
+            panel, label="Guess datasheets for unfound parts (BOM + datasheet linking)"
+        )
+        self.guess_datasheets.SetValue(True)
+        guess_row.Add(self.guess_datasheets, 0, wx.ALIGN_CENTER_VERTICAL)
+        warn = wx.StaticBitmap(panel, bitmap=_warning_bitmap())
+        warn.SetToolTip(
+            "Generic datasheets are a best guess from the part's type and package. "
+            "They may not be the exact part — verify before relying on them."
+        )
+        guess_row.Add(warn, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 6)
+        outer.Add(guess_row, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
+
         # Buttons
         btns = wx.BoxSizer(wx.HORIZONTAL)
         self.run_btn = wx.Button(panel, label="Link Datasheets")
@@ -573,6 +642,7 @@ class CertifyMeDialog(wx.Dialog):
         bom = bom_mod.build_bom(
             Path(self.project),
             provider,
+            guess_datasheets=self.guess_datasheets.GetValue(),
             on_event=lambda l: self.log(
                 f"  {l.quantity:>3}x  {l.value:16} "
                 f"{(l.unit_price and f'{l.unit_price:.4f}') or '-':>9}  [{l.refs_text}]"
@@ -820,7 +890,8 @@ class CertifyMeDialog(wx.Dialog):
             n = _update_board(
                 pcbnew.GetBoard(), provider,
                 overwrite=overwrite, prefer_field=prefer_field,
-                dry_run=dry, log=self.log,
+                dry_run=dry, guess_datasheets=self.guess_datasheets.GetValue(),
+                log=self.log,
             )
             self.log(f"Board footprints linked: {n}\n")
 
@@ -835,6 +906,7 @@ class CertifyMeDialog(wx.Dialog):
                     dry_run=dry,
                     overwrite=overwrite,
                     prefer_field=prefer_field,
+                    guess_datasheets=self.guess_datasheets.GetValue(),
                     on_event=lambda r: self._log_event(r),
                 )
                 self.log("\n" + summarize(report))
@@ -842,6 +914,10 @@ class CertifyMeDialog(wx.Dialog):
         self.log("\nDone." + ("  (dry run — nothing written)" if dry else ""))
 
     def _log_event(self, r: "PartResult") -> None:
-        glyph = {"linked": "+", "already": "=", "not-found": "?", "no-key": "-"}.get(r.status, " ")
-        if r.status in ("linked", "not-found"):
-            self.log(f"  [{glyph}] {r.part.kind:8} {r.part.name:24} {r.url or r.query or ''}")
+        glyph = {
+            "linked": "+", "linked-generic": "!", "already": "=",
+            "not-found": "?", "no-key": "-",
+        }.get(r.status, " ")
+        if r.status in ("linked", "linked-generic", "not-found"):
+            suffix = "  (generic - verify)" if r.status == "linked-generic" else ""
+            self.log(f"  [{glyph}] {r.part.kind:8} {r.part.name:24} {r.url or r.query or ''}{suffix}")

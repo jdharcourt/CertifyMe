@@ -30,7 +30,9 @@ def open_file(path, *, choose: bool = False) -> bool:
             # "openas" -> chooser dialog with Always / Just once; "open" -> default app.
             os.startfile(path, "openas" if choose else "open")  # type: ignore[attr-defined]
         elif sys.platform == "darwin":
-            subprocess.Popen(["open", path])
+            # Absolute path: KiCad's bundled Python may launch with a minimal
+            # PATH where a bare "open" isn't resolvable.
+            subprocess.Popen(["/usr/bin/open", path])
         else:
             subprocess.Popen(["xdg-open", path])
         return True

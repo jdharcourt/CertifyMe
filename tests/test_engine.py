@@ -119,3 +119,29 @@ def test_link_project_links_and_skips_existing(tmp_path):
     assert ("R", "already") in statuses          # had a datasheet, left alone
     assert ("R_0805_2012Metric", "linked") in statuses
     assert report.files_changed
+
+
+def test_link_project_generic_fallback(tmp_path):
+    shutil.copytree(FIXTURES, tmp_path / "proj")
+    # The provider only knows *generic* same-type parts, not the exact values.
+    provider = DummyProvider({
+        "10k resistor": "https://ds/generic-r.pdf",
+        "100nF capacitor 0603": "https://ds/generic-c0603.pdf",
+    })
+    report = link_project(
+        tmp_path / "proj", provider, overwrite=True, guess_datasheets=True
+    )
+    statuses = {(r.part.name, r.status) for r in report.results}
+    assert any(s == "linked-generic" for _, s in statuses)
+    # An IC with no exact match is left unfound, never guessed.
+    assert ("STM32F103C8T6", "not-found") in statuses
+    # The generic URL was actually written into the schematic.
+    sch = (tmp_path / "proj" / "board.kicad_sch").read_text(encoding="utf-8")
+    assert "generic-c0603.pdf" in sch
+
+
+def test_link_project_no_generic_when_disabled(tmp_path):
+    shutil.copytree(FIXTURES, tmp_path / "proj")
+    provider = DummyProvider({"100nF capacitor 0603": "https://ds/generic-c0603.pdf"})
+    report = link_project(tmp_path / "proj", provider, overwrite=True)  # guessing off
+    assert all(r.status != "linked-generic" for r in report.results)
