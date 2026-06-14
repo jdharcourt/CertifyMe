@@ -1,5 +1,7 @@
 # CertifyMe
 
+<!-- test line: push check 2026-06-14 -->
+
 A KiCad plugin (plus CLI) for PCB certification automation.
 
 Two tools, one DigiKey-backed engine:
