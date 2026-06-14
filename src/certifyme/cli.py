@@ -104,6 +104,13 @@ def _add_bom_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("project", type=Path, help="KiCad project directory or a .kicad_sch/.kicad_pcb file.")
     p.add_argument("-o", "--output", type=Path, help="Output .xlsx path (default: <project>-BOM.xlsx).")
     p.add_argument("--csv", action="store_true", help="Also write a .csv alongside the .xlsx.")
+    p.add_argument(
+        "--open",
+        dest="open_after",
+        action="store_true",
+        help="Open the BOM after writing it (Windows shows an app chooser with "
+        "Always / Just once).",
+    )
     p.add_argument("--provider", default="digikey", help="'digikey' (default) or 'dummy'.")
     p.add_argument("--dummy-map", type=Path, help="With --provider dummy: JSON {query: url|fields}.")
     p.add_argument("--currency", default="USD", help="Currency label for the BOM (default: USD).")
@@ -305,6 +312,11 @@ def cmd_bom(args) -> int:
     print("\nWrote:")
     for w in written:
         print(f"  {w}")
+
+    if getattr(args, "open_after", False):
+        from .open_file import open_file
+        if not open_file(out, choose=True):
+            print("\nwarning: could not open the BOM automatically.", file=sys.stderr)
     return 0
 
 
