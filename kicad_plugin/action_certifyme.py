@@ -41,6 +41,7 @@ try:  # installed layout: certifyme/ sits next to this file
     from .certifyme import config
     from .certifyme import highlight, kicad_theme
     from .certifyme.linker import PartResult, link_project, summarize
+    from .certifyme.open_file import open_file
     from .certifyme.providers import build_provider
 except ImportError:  # dev checkout: engine lives in ../src
     _src = os.path.join(os.path.dirname(__file__), "..", "src")
@@ -50,6 +51,7 @@ except ImportError:  # dev checkout: engine lives in ../src
     from certifyme import config  # type: ignore
     from certifyme import highlight, kicad_theme  # type: ignore
     from certifyme.linker import PartResult, link_project, summarize  # type: ignore
+    from certifyme.open_file import open_file  # type: ignore
     from certifyme.providers import build_provider  # type: ignore
 
 
@@ -416,6 +418,12 @@ class CertifyMeDialog(wx.Dialog):
         outer.Add(self.flag_list, 1, wx.EXPAND | wx.ALL, 8)
         self._flag_fps: list[object] = []  # row index -> footprint
 
+        # Open the BOM after writing it (Windows shows the "How do you want to
+        # open this file?" chooser with Always / Just once).
+        self.open_after_bom = wx.CheckBox(panel, label="Open BOM after export")
+        self.open_after_bom.SetValue(True)
+        outer.Add(self.open_after_bom, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
+
         # Buttons
         btns = wx.BoxSizer(wx.HORIZONTAL)
         self.run_btn = wx.Button(panel, label="Link Datasheets")
@@ -560,6 +568,12 @@ class CertifyMeDialog(wx.Dialog):
         bom_mod.write_csv_bom(bom, csv_path)
         self.log("\n" + bom_mod.summarize(bom))
         self.log(f"\nWrote:\n  {out_path}\n  {csv_path}")
+
+        if self.open_after_bom.GetValue():
+            if open_file(out_path, choose=True):
+                self.log("\nOpening BOM...")
+            else:
+                self.log("\nCouldn't open the BOM automatically; open it manually.")
 
     # -- PCB highlighting ---------------------------------------------------
 
